@@ -59,8 +59,8 @@ class SelectiveRepeatCommandTests(unittest.TestCase):
                 timeout=15,
             )
 
-        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
-        self.assertEqual((output / "payload.txt").read_bytes(), content)
+            self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+            self.assertEqual((output / "payload.txt").read_bytes(), content)
 
 
 if __name__ == "__main__":
