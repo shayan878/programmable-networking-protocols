@@ -1,16 +1,14 @@
 # Contributing
 
-Thanks for considering a contribution.
+Thank you for considering a contribution.
 
-## Scope
+## Project boundaries
 
-Keep the two artifacts distinct:
-
-- P4 data-plane changes belong in `p4src/`.
-- Selective Repeat orchestration belongs in `scripts/`.
-- Architecture, assumptions, and experiment procedures belong in `docs/`.
-
-Do not add performance claims without reproducible measurements and the exact environment used to obtain them. Do not describe the launcher as a full Selective Repeat implementation unless the endpoint protocol code and tests are included.
+- P4 data-plane behavior belongs in `p4src/`.
+- BMv2 / Mininet topology and table programming belong in `topology/`.
+- Selective Repeat protocol logic belongs in `src/selective_repeat/`.
+- Command-line entry points belong in `scripts/`.
+- Protocol, architecture, and experiment assumptions belong in `docs/`.
 
 ## Development setup
 
@@ -19,18 +17,20 @@ Use Python 3.10 or newer:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements-dev.txt
+python -m pip install -e . -r requirements-dev.txt
 make test
 make lint
 ```
 
-## Pull requests
+## Pull request expectations
 
-Please include:
+- Include focused unit or integration tests for Python changes.
+- Include compiler version and target details for P4 changes.
+- Update documentation when packet formats, protocol semantics, topology settings, or defaults change.
+- Keep experiments reproducible: record payload digest, parameters, random seeds, and relevant tool versions.
+- Do not report BMv2/Mininet validation unless those tools were actually used.
+- Do not commit generated BMv2 JSON, received files, packet captures, logs, or virtual-environment directories.
 
-- A concise description of the problem and change.
-- Tests or a clear explanation of how the change was validated.
-- Compiler and target versions for P4 changes.
-- Updated documentation for changed packet-processing behavior, parameters, or limitations.
+## Protocol changes
 
-Keep changes focused and avoid committing generated BMv2 JSON, build output, packet captures, or local environment files.
+The Selective Repeat protocol has versioned datagrams. A wire-format change should update the protocol version and its tests. Preserve independent per-segment retransmission; retransmitting every outstanding segment would change the protocol into Go-Back-N behavior.

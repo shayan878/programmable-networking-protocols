@@ -1,119 +1,187 @@
 # Programmable Data Plane and Reliable Transport
 
-A small networking coursework repository containing two related but independent artifacts:
+[![CI](https://github.com/shayan878/P4/actions/workflows/ci.yml/badge.svg)](https://github.com/shayan878/P4/actions/workflows/ci.yml)
 
-1. **P4 / BMv2 data plane** — an IPv4 forwarding pipeline with a two-hash, register-based approximate flow counter and threshold-based packet dropping.
-2. **Selective Repeat process launcher** — a Python utility that starts an external receiver and sender pair. The receiver and sender implementations are **not included** in this repository.
+A networking project that brings together two independently testable components:
 
-The repository is explicit about what is implemented and what still needs an environment or additional source files. It does not currently contain a Mininet topology, a P4Runtime controller, complete Selective Repeat endpoints, or measured performance results.
+- **P4_16 / BMv2 IPv4 forwarding:** an IPv4 forwarding pipeline with an approximate two-hash packet-frequency counter and threshold-based TCP packet dropping.
+- **Selective Repeat ARQ over UDP:** a reliable file-transfer implementation with a sliding sender window, per-segment retransmission, receiver-side out-of-order buffering, CRC-protected datagrams, and end-to-end SHA-256 verification.
 
-## Repository layout
+A reproducible **Mininet + BMv2** topology connects two IP subnets through the P4 switch. The Selective Repeat transfer can be exercised across that data plane.
+
+## Highlights
+
+- Modular Python package under `src/selective_repeat/`.
+- Independent packet timers and selective retransmission (not Go-Back-N).
+- Receiver buffers in-window out-of-order data and writes the file in order.
+- Session identifiers, protocol versioning, CRC-32 packet integrity, and final SHA-256 verification.
+- Atomic output-file replacement after successful verification.
+- Configurable window, segment size, timeout, retry limit, and simulated endpoint loss.
+- BMv2 v1model IPv4 LPM rules with an explicit Mininet topology.
+- Python unit and localhost integration tests on Python 3.10–3.12.
+
+## Repository structure
 
 ```text
 .
-├── .github/
-│   └── workflows/
-│       └── ci.yml
+├── .github/workflows/ci.yml
 ├── docs/
 │   ├── architecture.md
 │   ├── reproducibility.md
 │   └── selective-repeat.md
-├── p4src/
-│   └── main.p4
+├── p4src/main.p4
 ├── scripts/
-│   └── run_selective_repeat.py
+│   ├── run_selective_repeat.py
+│   ├── sr_receiver.py
+│   └── sr_sender.py
+├── src/selective_repeat/
+│   ├── __init__.py
+│   ├── protocol.py
+│   ├── receiver.py
+│   └── sender.py
 ├── tests/
-│   ├── test_p4_source.py
-│   └── test_selective_repeat_runner.py
-├── .gitignore
+├── topology/
+│   ├── commands.txt
+│   └── run_mininet.py
 ├── CONTRIBUTING.md
 ├── Makefile
 ├── pyproject.toml
 └── requirements-dev.txt
 ```
 
-## 1. P4 data plane
+## Quick start: Selective Repeat over localhost
 
-The P4 program targets the **BMv2 v1model architecture** and is written in P4_16. Its pipeline:
+Python 3.10+ is required.
 
-- Parses Ethernet, IPv4, and TCP headers.
-- Verifies the IPv4 header checksum.
-- For IPv4/TCP packets, hashes the source IPv4 address, destination IPv4 address, and TCP destination port into two register indices.
-- Increments the two counters and drops the packet when both counters exceed the configured threshold.
-- Applies an IPv4 longest-prefix-match table for forwarding.
-- Recomputes the IPv4 header checksum after processing.
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
 
-The two-register structure is an approximate frequency counter (count-min-style); it is **not a conventional Bloom filter**. The flow key is the three-field tuple described above, not the full TCP five-tuple.
+Create a small file and run the two-process demo:
 
-### Build
+```bash
+mkdir -p examples
+printf 'Reliable transfer with Selective Repeat.\\n' > examples/payload.txt
 
-Install a P4_16 compiler with the BMv2 backend (commonly `p4c`) and run:
+python scripts/run_selective_repeat.py \
+  --input examples/payload.txt \
+  --port 1002 \
+  --output-dir received
+```
+
+The demo starts the receiver, waits for the sender's START/READY handshake, transfers the file, verifies its SHA-256 digest, and exits. The receiver writes the completed file under `received/`.
+
+### Run sender and receiver separately
+
+Terminal 1:
+
+```bash
+python scripts/sr_receiver.py --bind 127.0.0.1 --port 1002 --output-dir received
+```
+
+Terminal 2:
+
+```bash
+python scripts/sr_sender.py \
+  --input examples/payload.txt \
+  --host 127.0.0.1 \
+  --port 1002 \
+  --window-size 8 \
+  --segment-size 1200
+```
+
+To exercise retransmission on localhost, use the demo's `--data-loss 0.05 --ack-loss 0.05 --seed 7` options. These two options inject reproducible application-level simulated losses; they are not measurements of physical network loss.
+
+## Build and run the P4 / Mininet topology
+
+The P4 experiment requires a Linux environment with:
+
+- P4_16 compiler `p4c` with BMv2 v1model backend.
+- BMv2 `simple_switch` and `simple_switch_CLI`.
+- Mininet.
+- P4-Utils (provides the BMv2-aware Mininet switch and host classes).
+
+Install and version these tools following their upstream documentation; see [reproducibility](docs/reproducibility.md).
+
+Compile the P4 program:
 
 ```bash
 make p4-compile
 ```
 
-Or compile directly:
+Start the interactive network (root privileges are required):
 
 ```bash
-mkdir -p build
-p4c --target bmv2 --arch v1model --std p4-16 \
-  -o build/main.json p4src/main.p4
+sudo make mininet
 ```
 
-This produces a BMv2 JSON pipeline artifact. It does **not** start a switch or install forwarding entries.
-
-## 2. Selective Repeat launcher
-
-The launcher starts these two external scripts, in this order:
-
-- `receive.py` — expected at the repository root by default; it should start the receiver.
-- `send.py` — expected at the repository root by default; it receives the destination host and port as positional arguments.
-
-Those endpoint scripts are not currently tracked here. The launcher reports the missing files rather than pretending that a simulation can run.
-
-Once the endpoint implementations are available:
+Run the connectivity smoke test instead of opening the Mininet CLI:
 
 ```bash
-python scripts/run_selective_repeat.py \
-  --receiver-script receive.py \
-  --sender-script send.py \
-  --host 10.0.2.2 \
-  --port 1002
+sudo make mininet-test
 ```
 
-See [the launcher contract](docs/selective-repeat.md) before integrating endpoint implementations.
+The topology is:
+
+```text
+h1 (10.0.1.1/24) -- port 1 [ s1: BMv2 / P4 ] port 2 -- h2 (10.0.2.2/24)
+```
+
+The script installs static ARP entries and two IPv4 LPM entries. To transfer a file through the P4 switch, from the Mininet CLI:
+
+```text
+mininet> h2 python3 scripts/sr_receiver.py --bind 10.0.2.2 --port 1002 --output-dir /tmp/received &
+mininet> h1 python3 scripts/sr_sender.py --input examples/payload.txt --host 10.0.2.2 --port 1002
+```
+
+Optional link shaping is available:
+
+```bash
+sudo python3 topology/run_mininet.py --delay 10ms --bandwidth 50 --link-loss 1.0
+```
+
+Here, bandwidth is in Mbit/s and link loss is a percentage applied by Mininet's traffic-control links.
 
 ## Development
 
-Python 3.10 or newer is required for the launcher and tests. The launcher uses only the Python standard library.
-
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements-dev.txt
+python -m pip install -e . -r requirements-dev.txt
 make test
 make lint
 ```
 
-On Windows, activate the virtual environment with `.venv\\Scripts\\activate`.
+To clean local BMv2/Mininet and Python outputs:
 
-## Validation scope
+```bash
+make clean
+sudo mn -c
+```
 
-GitHub Actions runs Python unit tests and Ruff linting on Python 3.10, 3.11, and 3.12. These checks validate the launcher and repository-level source contracts; they do not compile P4 or execute BMv2.
+## Scope and limitations
 
-A real data-plane experiment additionally requires a compatible `p4c` compiler, BMv2, a configured topology, runtime table entries, and documented traffic-generation parameters. See [reproducibility notes](docs/reproducibility.md).
+### P4 data plane
 
-## Known limitations
+- The program targets BMv2's v1model architecture; other targets may require changes.
+- IPv4 LPM entries are installed by the included two-host topology. Other topologies need their own table entries.
+- The packet-frequency key is `(IPv4 source, IPv4 destination, TCP destination port)`; it is not a TCP five-tuple.
+- The two 32-bit registers form an approximate frequency counter, not a conventional Bloom filter. Collisions can cause overestimation.
+- The threshold applies to TCP packets only. The Selective Repeat transport uses UDP and is not subject to that TCP-specific counter.
+- Counter reset, overflow, and target-specific register atomicity need consideration in long-running experiments.
+- IPv4 options are not parsed; the parser extracts the fixed 20-byte IPv4 header.
+- The topology is an emulation for functional experiments, not a physical-network performance benchmark.
 
-- No Mininet topology, P4Runtime controller, or table-entry script is included.
-- The IPv4 LPM table has a `NoAction` default; forwarding behavior depends on installing appropriate entries.
-- The counter key omits the TCP source port and protocol number. It therefore aggregates packets by source IPv4, destination IPv4, and destination TCP port.
-- The register counters are 32-bit and are not reset by this program. Counter wraparound and target-specific register read/write atomicity should be considered before interpreting results.
-- The pipeline drops packets after the counter threshold is crossed; it does not generate ICMP errors.
-- The Selective Repeat sender and receiver implementations are external and absent from this repository.
-- No throughput, loss, latency, or fairness results are claimed by the current source tree.
+### Selective Repeat
+
+- This is an educational application-layer reliable transfer protocol over UDP, not a replacement for TCP.
+- Sequence numbers are monotonic unsigned 32-bit values and do not wrap during a transfer.
+- The receiver accepts one active transfer at a time and overwrites an existing file with the same output name after successful verification.
+- CRC-32 detects accidental datagram corruption; it is not cryptographic authentication. SHA-256 verifies the completed file contents but does not authenticate the sender.
+- Do not expose the receiver to untrusted networks without adding authentication, quotas, and stricter resource limits.
+
+No throughput figures are claimed by default. Use the included commands and record tool versions, topology settings, file size, window, segment size, timeout, retry count, and loss settings when reporting experimental results.
 
 ## License
 
-No license has been selected for this repository yet. Until one is added, the source should not be assumed to grant general reuse or redistribution rights.
+A license has not been selected for this repository. Until one is added, do not assume the code is licensed for general reuse or redistribution.

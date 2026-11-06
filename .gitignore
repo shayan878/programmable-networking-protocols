@@ -7,13 +7,15 @@ venv/
 .env
 .ruff_cache/
 .pytest_cache/
+*.egg-info/
 
 # Build artifacts
 build/
 dist/
-*.egg-info/
 
-# Network experiment outputs
+# Transfer and experiment outputs
+received/
+*.part
 *.pcap
 *.pcapng
 *.log

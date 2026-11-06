@@ -1,54 +1,81 @@
-# Architecture and implementation notes
+# Architecture
 
-## P4 pipeline
+## System overview
 
-The P4 program in `p4src/main.p4` uses the BMv2 `v1model` architecture and defines the following path:
+The repository contains two components joined by a reproducible Mininet topology:
+
+- A P4_16 IPv4 forwarding program executing on BMv2.
+- An application-layer Selective Repeat transport implemented over UDP.
 
 ```mermaid
-flowchart TD
-    A[Ethernet parser] --> B{EtherType is IPv4?}
-    B -- No --> G[Accept and deparse]
-    B -- Yes --> C[Parse IPv4]
-    C --> D{Protocol is TCP?}
-    D -- Yes --> E[Parse TCP and update two hashed counters]
-    D -- No --> F[IPv4 LPM table]
-    E --> H{Both counters exceed threshold?}
-    H -- Yes --> I[Drop]
-    H -- No --> F
-    F --> J[Selected forwarding action or NoAction]
-    J --> K[Recompute IPv4 checksum]
-    K --> L[Deparse]
+flowchart LR
+    H1[Host h1<br/>10.0.1.1/24] --> S[P4 BMv2 switch<br/>IPv4 LPM]
+    S --> H2[Host h2<br/>10.0.2.2/24]
+    H2 -. UDP ACKs .-> S
+    S -. UDP ACKs .-> H1
 ```
 
-The parser extracts Ethernet, IPv4, and TCP headers. Other EtherTypes and non-TCP IPv4 packets are accepted without TCP-specific processing.
+## P4 processing pipeline
 
-### Approximate packet counter
+The program in `p4src/main.p4` targets BMv2 v1model.
 
-For each IPv4/TCP packet, the program hashes this key:
+1. Parse Ethernet and, when applicable, IPv4 and TCP.
+2. Verify the IPv4 header checksum.
+3. For TCP packets, hash `(IPv4 source, IPv4 destination, TCP destination port)` using CRC-16 and CRC-32 into two register indices.
+4. Increment the two 32-bit register counters.
+5. Drop a TCP packet if both updated counters exceed `FLOW_PACKET_THRESHOLD`.
+6. Otherwise, apply IPv4 LPM forwarding.
+7. Rewrite both Ethernet source and destination MAC addresses for the egress subnet, decrement TTL, recompute the IPv4 header checksum, and deparse.
 
-`(IPv4 source address, IPv4 destination address, TCP destination port)`
+The two counters behave like a small count-min-style approximate frequency structure. Collisions may overestimate a key's packet count. It is not a Bloom filter.
 
-Two different CRC hash algorithms select register indices. The corresponding 32-bit counters are incremented. The packet is dropped if **both updated counter values are greater than 1,000**.
+### Forwarding topology
 
-This is a two-hash approximate frequency counter with count-min-style query behavior. It can overestimate a key's frequency because unrelated keys may collide in the same registers. It is not a membership Bloom filter: the registers store counters, not inserted-item bits.
+The supplied Mininet topology uses two IP subnets to exercise the LPM path:
 
-Important implementation properties:
+| Node | IP address | Default gateway |
+|---|---|---|
+| h1 | 10.0.1.1/24 | 10.0.1.254 |
+| h2 | 10.0.2.2/24 | 10.0.2.254 |
 
-- The key omits the TCP source port, so it is not a five-tuple flow identifier.
-- Counters are 32-bit and have no saturation or reset logic in the data plane.
-- Register read/modify/write behavior and atomicity depend on the target implementation.
-- The code does not emit an ICMP response when it drops a packet.
+The hosts install static ARP entries for the gateway MAC addresses. The switch is programmed with two host routes:
 
-### Forwarding
+- `10.0.2.2/32` to h2's MAC address on switch port 2, using the router MAC for subnet 2 as Ethernet source.
+- `10.0.1.1/32` to h1's MAC address on switch port 1, using the router MAC for subnet 1 as Ethernet source.
 
-The `ipv4_lpm` table performs longest-prefix-match lookup on the destination IPv4 address. The table has a `NoAction` default, so a deployment must install the appropriate entries through its control plane before expecting configured forwarding behavior.
+Static ARP is intentional: the P4 parser does not implement ARP learning or forwarding.
 
-The forwarding action decrements TTL and rewrites Ethernet addresses. The project does not currently include a runtime controller or a topology configuration, so those operational details are not automated or validated here.
+## Selective Repeat protocol
 
-### Checksums
+`src/selective_repeat/protocol.py` defines a versioned datagram format with session IDs and CRC-32 validation. `sender.py` maintains per-segment timers and a selective acknowledgement set. `receiver.py` buffers out-of-order segments, commits only contiguous data, verifies the final file digest, and atomically moves the completed file into place.
 
-The pipeline verifies and recomputes the IPv4 header checksum. It does not verify or recompute the TCP checksum; the current ingress logic does not modify TCP header fields.
+```mermaid
+sequenceDiagram
+    participant Sender
+    participant Receiver
+    Sender->>Receiver: START (metadata, SHA-256)
+    Receiver-->>Sender: READY (negotiated window)
+    loop Sliding window
+        Sender->>Receiver: DATA(seq)
+        Receiver-->>Sender: ACK(seq)
+        Note over Sender,Receiver: Lost DATA or ACK is recovered by retransmitting only the unacknowledged segment
+    end
+    Sender->>Receiver: FIN
+    Receiver->>Receiver: Verify size and SHA-256
+    Receiver-->>Sender: FIN_ACK
+    Sender->>Receiver: CLOSE
+    Note over Receiver: Duplicate FIN is re-acknowledged during the close linger interval
+```
 
-## Selective Repeat launcher
+The transfer is application-layer UDP, not TCP. The BMv2 counter only processes TCP packets, so Selective Repeat UDP segments are forwarded by the IPv4 LPM table without incrementing that TCP-specific counter.
 
-`scripts/run_selective_repeat.py` is orchestration only. It starts an external receiver script and then an external sender script, passing the destination host and port to the sender. Neither endpoint is included in the repository. See [selective-repeat.md](selective-repeat.md) for the interface contract.
+## Experiment flow
+
+1. Compile the P4 source to a BMv2 JSON pipeline.
+2. Start Mininet with one BMv2 switch and two hosts on different subnets.
+3. Install static ARP and IPv4 LPM entries.
+4. Run a ping smoke test.
+5. Start the Selective Repeat receiver on h2 and sender on h1.
+6. Record the sender's JSON statistics and the tool/topology configuration used.
+
+The topology script does not invent throughput measurements or silently run an experiment in CI. See [reproducibility.md](reproducibility.md).

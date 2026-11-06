@@ -1,13 +1,16 @@
 import unittest
 from pathlib import Path
 
-P4_SOURCE = Path(__file__).resolve().parents[1] / "p4src" / "main.p4"
+ROOT = Path(__file__).resolve().parents[1]
+P4_SOURCE = ROOT / "p4src" / "main.p4"
+COMMANDS = ROOT / "topology" / "commands.txt"
 
 
 class P4SourceContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.source = P4_SOURCE.read_text(encoding="utf-8")
+        cls.commands = COMMANDS.read_text(encoding="utf-8")
 
     def test_declares_v1model_pipeline(self) -> None:
         self.assertIn("#include <v1model.p4>", self.source)
@@ -24,6 +27,12 @@ class P4SourceContractTests(unittest.TestCase):
         self.assertIn("HashAlgorithm.crc32", self.source)
         self.assertIn("meta.counter_one > FLOW_PACKET_THRESHOLD", self.source)
         self.assertIn("meta.counter_two > FLOW_PACKET_THRESHOLD", self.source)
+
+    def test_forwarding_rewrites_both_ethernet_addresses(self) -> None:
+        self.assertIn("hdr.ethernet.src_addr = router_src_mac", self.source)
+        self.assertIn("hdr.ethernet.dst_addr = next_hop_mac", self.source)
+        self.assertIn("00:aa:bb:00:00:02 00:00:00:00:02:02 2", self.commands)
+        self.assertIn("00:aa:bb:00:00:01 00:00:00:00:01:01 1", self.commands)
 
     def test_does_not_mislabel_counter_as_bloom_filter(self) -> None:
         self.assertNotIn("BLOOM_FILTER", self.source)

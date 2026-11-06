@@ -156,8 +156,14 @@ control MyIngress(
         flow_counters.write(meta.hash_index_two, meta.counter_two);
     }
 
-    action ipv4_forward(macAddr_t next_hop_mac, egressSpec_t port) {
-        hdr.ethernet.src_addr = hdr.ethernet.dst_addr;
+    // Both source and destination MAC addresses are specified for the
+    // egress subnet; this is required for the included two-subnet topology.
+    action ipv4_forward(
+        macAddr_t router_src_mac,
+        macAddr_t next_hop_mac,
+        egressSpec_t port
+    ) {
+        hdr.ethernet.src_addr = router_src_mac;
         hdr.ethernet.dst_addr = next_hop_mac;
         standard_metadata.egress_spec = port;
         hdr.ipv4.ttl = hdr.ipv4.ttl - 1;
