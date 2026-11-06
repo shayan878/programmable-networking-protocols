@@ -185,10 +185,12 @@ control MyIngress(
                     && meta.counter_two > FLOW_PACKET_THRESHOLD
                 ) {
                     drop();
-                    return;
+                } else {
+                    ipv4_lpm.apply();
                 }
+            } else {
+                ipv4_lpm.apply();
             }
-            ipv4_lpm.apply();
         }
     }
 }
