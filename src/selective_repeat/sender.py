@@ -63,11 +63,14 @@ def _receive_control(
         sock.settimeout(remaining)
         try:
             raw = sock.recv(65_507)
-        except (TimeoutError, ConnectionRefusedError):
-            # A UDP ICMP port-unreachable can arrive if the receiver process
-            # has not bound its socket yet. Treat it like a lost START/ACK and
-            # let the protocol retry rather than aborting the transfer.
+        except TimeoutError:
             return None
+        except ConnectionRefusedError:
+            # A UDP ICMP port-unreachable can arrive while the receiver is
+            # starting. Stay within this attempt's deadline so transient startup
+            # races do not consume the entire retry budget immediately.
+            time.sleep(min(remaining, 0.02))
+            continue
         try:
             packet = decode_packet(raw)
         except ProtocolError:
