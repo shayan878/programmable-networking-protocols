@@ -1,5 +1,5 @@
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 P4_SOURCE = Path(__file__).resolve().parents[1] / "p4src" / "main.p4"
 
